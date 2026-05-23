@@ -86,6 +86,8 @@ var<storage, read> inputField: array<Cell>;
 @group(2) @binding(1)
 var<storage, read_write> outputField: array<Cell>;
 
+
+
 struct Params {
   width: u32,
   height: u32,
@@ -294,8 +296,9 @@ let height = 8u;
   // --------------------------------------------------
 let uv =
     (vec2f(f32(outX)+0.5, f32(outY)+0.5))
-    / vec2f(f32(params.width), f32(params.height));
-      let outIndex =
+    / vec2f(f32(params.width - 1), f32(params.height -1));
+
+    let outIndex =
     outY * params.width + outX;
 
 
@@ -306,7 +309,7 @@ let velocity =
 
     let dt = 0.016;
     let prevUV =
-        uv;
+        uv - velocity;
 
     let safeUV =
     clamp(
@@ -395,17 +398,7 @@ let finalResult =
   // --------------------------------------------------
 
 
-
-      let daVelocity = outputField[outIndex].velocity;
-
-
-      if(daVelocity.y != 0){
-      outputField[outIndex].color = vec4f(0,0,0,1);
-    } else if(daVelocity.x != 0){
-      outputField[outIndex].color = vec4f(0,0,0,1);
-    }else{
-        outputField[outIndex].color = finalResult;
-      }
+          outputField[outIndex].color = finalResult;
 
 
   outputField[outIndex].density = 0;
@@ -486,9 +479,11 @@ const inputBuffer =
     usage:
       GPUBufferUsage.STORAGE |
       GPUBufferUsage.COPY_DST
-      ,
-
 });
+
+
+
+
 const paramsBuffer = device.createBuffer({
   size: 16,
   usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
@@ -794,6 +789,8 @@ let pongBindGroup =
 
 
 
+
+
 const DaColorPicker = new window.iro.ColorPicker("#RAHPICKER")
 
 function frame(now) {
@@ -830,14 +827,20 @@ mouseUpdate();
 }
   
 
-const currentFieldBindGroup = ping ? pongBindGroup : pingBindGroup;
+;
 
-    
+const currentField =
+    ping ? pongBindGroup : pingBindGroup;
+
+
+
+
 const computePass = encoder.beginComputePass();
 computePass.setPipeline(computePipeline)
 computePass.setBindGroup(1,computeA)
 computePass.setBindGroup(0,mouseBind)
-computePass.setBindGroup(2,currentFieldBindGroup);
+computePass.setBindGroup(2,currentField);
+
 const workGroupWidth = 32;
 const workGroupHeight = 8
 
@@ -858,7 +861,7 @@ renderPass.draw(6)
 
 renderPass.setBindGroup(1,renderA)
 renderPass.setBindGroup(0,mouseBind)
-renderPass.setBindGroup(2,currentFieldBindGroup);
+renderPass.setBindGroup(2,currentField);
 
 
 
