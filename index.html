@@ -306,13 +306,7 @@ let velocity =
 
     let dt = 0.016;
     let prevUV =
-        uv - (velocity / vec2f(f32(params.width), f32(params.height))) * dt;
-    var rah = 1.0;
-    if (
-    velocity.x > 0.0 ||
-    velocity.y > 0.0){
-    rah = 1;
-    }
+        uv;
 
     let safeUV =
     clamp(
@@ -323,13 +317,13 @@ let velocity =
 
     let sampleX =
     u32(
-        safeUV.x *
+        uv.x *
         f32(params.width - 1u)
     );
 
 let sampleY =
     u32(
-        safeUV.y *
+        uv.y *
         f32(params.height - 1u)
     );
 
