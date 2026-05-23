@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Basic JS Link</title>
+</head>
+<body>
+    <div id="RAHPICKER" z-index:10; ></div>
+    <div id="fps"></div>
+   <canvas id="c" style="width: 100%; height: 100%; position: fixed; left: 0; top: 0; image-rendering: pixelated; z-index: 2;"></canvas>
+   <button id="daPlayer"> YAH YAH</button>
+  <button id="btn">Click me</button>
+<script src="https://cdn.jsdelivr.net/npm/@jaames/iro@5"></script>
+
+<script type="module">
+  const backgroundShader=`
+struct VSOut {
+    @builtin(position) pos : vec4f,
+};
+
+
+
+
+
+@vertex
+fn v1(
+    @builtin(vertex_index) i : u32
+) -> VSOut {
+
+    var positions = array<vec2f, 6>(
+        vec2f(-1.0, -1.0),
+        vec2f( 1.0, -1.0),
+        vec2f(-1.0,  1.0),
+
+        vec2f(-1,  1.0),
+        vec2f( 1.0, -1.0),
+        vec2f( 1.0,  1.0),
+    );
+
+    var out : VSOut;
+
+    out.pos = vec4f(positions[i], 0.0, 1.0);
+
+    return out;
+}
+
+@fragment
+fn f1() -> @location(0) vec4f {
+
+    // background color
+    return vec4f(1, 0.05, 0.08, 1.0);
+}
+`
+const shader =`
+@binding(0) @group(0) var<uniform> mouseValues: MouseData;
+@binding(2) @group(0) var<uniform> brush: vec4f;
+
+
+struct MouseData {
+    mouse: vec2<f32>,
+    brushSize: f32,
+    isPressed: f32,
+    canvasSize: vec2<f32>,
+    mouseVelocity: vec2<f32>
+}
+
+struct RahOut{
+    @builtin(position) pos :vec4f,
+    @location(0) color: vec4f,
+};
+
+
+
+struct Cell {
+  color: vec4f,
+  velocity : vec2f,
+  density : f32,
+  pressure : f32,
+};
+
+
+@group(2) @binding(0)
+var<storage, read> inputField: array<Cell>;
+
+@group(2) @binding(1)
+var<storage, read_write> outputField: array<Cell>;
+
+struct Params {
+  width: u32,
+  height: u32,
+};
+
+@group(0) @binding(1)
+var<uniform> params: Params;
+
+
+@vertex 
+fn v1(@builtin(vertex_index) i: u32) -> RahOut{
+var DAarray = array<vec4f,6>(
+vec4f(-1,-1,0,1),
+vec4f(1,-1,0,1),
+vec4f(-1,1,0,1),
+
+vec4f(-1,1,0,1),
+vec4f(1,-1,0,1),
+vec4f(1,1,0,1)
+);
+
+var returned: RahOut;
+returned.pos = DAarray[i];
+returned.color = vec4f(1,1,1,1);
+return returned;
+
+}
+
+@fragment
+fn f1(@builtin(position) fragPos: vec4<f32>) -> @location(0) vec4f {
+let uv = fragPos.xy / mouseValues.canvasSize.xy;
+  let gx = u32(uv.x * f32(params.width));
+  let gy = u32(uv.y * f32(params.height));
+
+  // clamp safety
+  let x = min(gx, params.width  - 1u);
+  let y = min(gy, params.height - 1u);
+
+  // -----------------------------------
+  // INDEX
+  // -----------------------------------
+
+  let index = y * params.width + x;
+
+  // -----------------------------------
+  // READ BUFFER
+  // -----------------------------------
+
+  let value = inputField[index].color;
+
+
+
+return value;
+
+}
+
+var<workgroup> tile: array<array<Cell, 32+2>, 8+2>;
+
+@compute @workgroup_size(32, 8)
+fn c1(
+  @builtin(local_invocation_id) lid3 : vec3<u32>,
+  @builtin(workgroup_id) wid : vec3<u32>
+) {
+
+
+let width = 32u;
+let height = 8u;
+  // --------------------------------------------------
+  // STEP 1:
+  // FLATTEN THREAD ID
+  // --------------------------------------------------
+
+  let lx = lid3.x;
+  let ly = lid3.y;
+
+  // 0..255
+  let lid = ly * width + lx;
+
+  // --------------------------------------------------
+  // STEP 2:
+  // TILE INFO
+  // --------------------------------------------------
+
+  let TILE_W = width+ 2u;
+  let TILE_H = height+2u;
+
+  let TILE_SIZE = TILE_W * TILE_H; // 340
+
+  // --------------------------------------------------
+  // STEP 3:
+  // COOPERATIVE STRIDED LOAD
+  // --------------------------------------------------
+
+  // every thread loads:
+  // i = lid
+  // then i += 256
+  // until full tile covered
+
+  for (var i = lid; i < TILE_SIZE; i += 256u) {
+
+    // ----------------------------------------------
+    // STEP 4:
+    // CONVERT LINEAR TILE INDEX -> TILE XY
+    // ----------------------------------------------
+
+    let tx = i % TILE_W;
+    let ty = i / TILE_W;
+
+    // ----------------------------------------------
+    // STEP 5:
+    // CONVERT TILE XY -> GLOBAL XY
+    //
+    // subtract 1 because halo expands outward
+    // ----------------------------------------------
+
+    let gx =
+  i32(wid.x * width) +
+  i32(tx) - 1;
+    let gy = i32(wid.y * height)  + i32(ty) - 1;
+
+    // ----------------------------------------------
+    // STEP 6:
+    // CLAMP TO DOMAIN
+    // avoids branches
+    // ----------------------------------------------
+
+    let cgx = clamp(gx, 0, i32(params.width)  - 1);
+    let cgy = clamp(gy, 0, i32(params.height) - 1);
+
+    // ----------------------------------------------
+    // STEP 7:
+    // GLOBAL INDEX
+    // ----------------------------------------------
+
+    let index =
+      u32(cgy) * params.width +
+      u32(cgx);
+
+    // ----------------------------------------------
+    // STEP 8:
+    // LOAD INTO SHARED MEMORY TILE
+    // ----------------------------------------------
+
+    tile[ty][tx].color = inputField[index].color;
+    tile[ty][tx].velocity = inputField[index].velocity;
+  }
+
+  // --------------------------------------------------
+  // STEP 9:
+  // WAIT UNTIL ENTIRE TILE IS FILLED
+  // --------------------------------------------------
+
+  workgroupBarrier();
+
+  // --------------------------------------------------
+  // STEP 10:
+  // INTERIOR THREAD COORDS
+  //
+  // interior starts at +1 because halo occupies edges
+  // --------------------------------------------------
+
+   let tx = lx + 1u;
+  let ty = ly + 1u;
+
+  // --------------------------------------------------
+  // OUTPUT COORDS
+  // --------------------------------------------------
+
+  let outX =
+    wid.x * width + lx;
+
+  let outY =
+    wid.y * height + ly;
+
+  // --------------------------------------------------
+  // BOUNDS CHECK
+  // --------------------------------------------------
+
+  if (
+    outX >= params.width ||
+    outY >= params.height
+  ) {
+    return;
+  }
+
+  // --------------------------------------------------
+  // STENCIL READ
+  // --------------------------------------------------
+
+  let c = tile[ty][tx].color;
+
+  let l =
+    tile[ty][tx - 1u].color;
+
+  let r =
+    tile[ty][tx + 1u].color;
+
+  let u =
+    tile[ty - 1u][tx].color;
+
+  let d =
+    tile[ty + 1u][tx].color;
+
+  // --------------------------------------------------
+  // STENCIL COMPUTE
+  // --------------------------------------------------
+let uv =
+    (vec2f(f32(outX)+0.5, f32(outY)+0.5))
+    / vec2f(f32(params.width), f32(params.height));
+      let outIndex =
+    outY * params.width + outX;
+
+
+
+    
+let velocity =
+    tile[ty][tx].velocity;
+
+    let dt = 0.016;
+    let prevUV =
+        uv - (velocity / vec2f(f32(params.width), f32(params.height))) * dt;
+    var rah = 1.0;
+    if (
+    velocity.x > 0.0 ||
+    velocity.y > 0.0){
+    rah = 1;
+    }
+
+    let safeUV =
+    clamp(
+        prevUV,
+        vec2f(0.0),
+        vec2f(1.0)
+    );
+
+    let sampleX =
+    u32(
+        safeUV.x *
+        f32(params.width - 1u)
+    );
+
+let sampleY =
+    u32(
+        safeUV.y *
+        f32(params.height - 1u)
+    );
+
+    let sampleIndex =
+    sampleY * params.width +
+    sampleX;
+
+    let advectedColor = inputField[sampleIndex].color;
+
+
+
+
+  let result =
+      advectedColor;
+
+  // --------------------------------------------------
+  // UV
+  // --------------------------------------------------
+let injectedVelocity =
+    mouseValues.mouseVelocity * 20.0;
+
+
+  // --------------------------------------------------
+  // MOUSE DISTANCE
+  // --------------------------------------------------
+  let mousePos = mouseValues.mouse.xy;
+  let mouseRad = mouseValues.brushSize;
+  let diff =
+    uv - mousePos;
+
+  let distSq =
+    dot(diff, diff);
+
+  let radiusSq =
+    mouseRad *
+    mouseRad;
+
+  // --------------------------------------------------
+  // BRUSH MASK
+  // --------------------------------------------------
+
+  let influence =
+    select(
+      0.0,
+      1.0,
+      distSq < radiusSq
+    ) * mouseValues.isPressed;
+
+  // --------------------------------------------------
+  // DYE
+  // --------------------------------------------------
+
+  let dyeColor = brush;
+
+    let advectedVelocity =
+    inputField[sampleIndex].velocity;
+
+
+let finalVelocity =
+    vec2f(0.0,0.0);
+
+
+let finalResult =
+    result * (1.0 - influence) +
+    dyeColor * influence;
+
+  // --------------------------------------------------
+  // WRITE OUTPUT
+  // --------------------------------------------------
+
+
+
+      let daVelocity = outputField[outIndex].velocity;
+
+
+      if(daVelocity.y != 0){
+      outputField[outIndex].color = vec4f(0,0,0,1);
+    } else if(daVelocity.x != 0){
+      outputField[outIndex].color = vec4f(0,0,0,1);
+    }else{
+        outputField[outIndex].color = finalResult;
+      }
+
+
+  outputField[outIndex].density = 0;
+  outputField[outIndex].pressure += 0.01;
+  outputField[outIndex].velocity = vec2f(0.0, 0.0);
+
+    
+  
+    }
+`
+const gridWidth = 256
+const gridHeight = 256
+
+const adapter = await navigator.gpu.requestAdapter()
+
+
+console.log(adapter.limits.maxComputeWorkgroupSizeX);
+console.log(adapter.limits.maxComputeWorkgroupSizeY);
+console.log(adapter.limits.maxComputeWorkgroupSizeZ);
+
+console.log(adapter.limits.maxComputeInvocationsPerWorkgroup);
+console.log(adapter.limits.maxBindingsPerBindGroup)
+
+console.log("DA GPU",adapter.info);
+
+const device = await adapter.requestDevice()
+
+
+
+
+
+const fieldLayout =
+  device.createBindGroupLayout({
+
+    entries: [
+
+      {
+        binding: 0,
+
+        visibility:
+          GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
+
+        buffer: {
+          type: "read-only-storage"
+        }
+      },
+
+      {
+        binding: 1,
+
+        visibility:
+          GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
+
+        buffer: {
+          type: "storage"
+        }
+      }
+
+    ]
+});
+
+const CELL_SIZE = 48
+const outputBuffer =
+  device.createBuffer({
+
+    size: gridWidth*gridHeight * CELL_SIZE,
+
+    usage:
+      GPUBufferUsage.STORAGE |
+      GPUBufferUsage.COPY_SRC
+});
+
+const inputBuffer =
+  device.createBuffer({
+
+    size: gridWidth*gridHeight * CELL_SIZE,
+
+    usage:
+      GPUBufferUsage.STORAGE |
+      GPUBufferUsage.COPY_DST
+      ,
+
+});
+const paramsBuffer = device.createBuffer({
+  size: 16,
+  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+});
+
+
+const paramsData = new Uint32Array([
+  gridWidth,
+  gridHeight,
+  0,
+  0
+]);
+device.queue.writeBuffer(
+  paramsBuffer,
+  0,
+  paramsData
+);
+
+
+
+const shaderModule = device.createShaderModule({
+    code: shader})
+const backgroundModule = device.createShaderModule({
+  code: backgroundShader
+})
+const canvas = document.getElementById("c")
+
+const ctx = canvas.getContext("webgpu")
+ctx.configure({device: device,
+    format: navigator.gpu.getPreferredCanvasFormat()
+})
+var mouseX = 0;
+var mouseY = 0;
+
+
+const DaPaintTexture = device.createTexture({format:"r32float",size: [9,9,1],usage:GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST})
+const RahTexture = device.createTexture({format:"r32uint",size:[1,1,1], usage:GPUTextureUsage.TEXTURE_BINDING })
+
+const gpuTexture = device.createTexture({format:"r16float",size: [16,16,1],usage: GPUTextureUsage.RENDER_ATTACHMENT})
+
+const texWrite = device.createTexture({
+  size: [2560, 2560, 1],
+  format: "rgba8unorm",
+  usage:
+    GPUTextureUsage.TEXTURE_BINDING |
+    GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.COPY_SRC |
+    GPUTextureUsage.STORAGE_BINDING
+});
+
+const texRead = device.createTexture({
+  size: [256, 256, 1],
+  format: "rgba8unorm",
+  usage:
+    GPUTextureUsage.TEXTURE_BINDING |
+    GPUTextureUsage.COPY_DST |
+    GPUTextureUsage.COPY_SRC |
+    GPUTextureUsage.STORAGE_BINDING
+});
+
+const DaMouseBuffer = device.createBuffer({mappedAtCreation:false,size:32,usage:GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST})
+const BrushBuffer = device.createBuffer({mappedAtCreation:false,size:32,usage:GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST})
+
+
+
+//encoder.copyTextureToTexture({texture:DaPaintTexture}
+const sampler = device.createSampler({
+  magFilter: "nearest",
+  minFilter: "nearest"
+});
+const pongGroupLayout = device.createBindGroupLayout({entries:[
+    {
+      binding: 0,
+      visibility: GPUShaderStage.COMPUTE,
+      storageTexture: {
+        access: "read-only",
+        format: "rgba8unorm"
+      }
+    },
+    {
+      binding: 1,
+      visibility: GPUShaderStage.COMPUTE, 
+      storageTexture: {
+        access: "write-only",
+        format: "rgba8unorm"
+      }
+    }
+]}
+)
+
+const renderGroupLayout = device.createBindGroupLayout({entries:[
+    {
+      binding: 1,
+      visibility: GPUShaderStage.FRAGMENT,
+      sampler: {}
+    },
+    {
+    binding:0,
+    visibility: GPUShaderStage.FRAGMENT,
+      texture: {
+        sampleType: "float"
+      }
+    }
+]}
+)
+
+//const readBuffer = device.createBuffer({
+  //size: 256 * 256 * 4,
+  //usage:
+   // GPUBufferUsage.COPY_DST |
+    //GPUBufferUsage.MAP_READ
+//});
+
+
+
+const mouseGroupLayout = device.createBindGroupLayout({
+  entries: [
+    {
+      binding: 0,
+      visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
+      buffer: { type: "uniform" }
+    },
+        {
+      binding: 1,
+      visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
+      buffer: { type: "uniform" }
+    },{
+      binding: 2,
+      visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
+      buffer: { type: "uniform" }
+    }
+  ]
+});
+    
+
+const mouseBind = device.createBindGroup({layout:mouseGroupLayout,entries:[
+    {
+        binding:0,
+        resource:{buffer:DaMouseBuffer}
+    },
+    {
+      binding:1,
+      resource:{buffer:paramsBuffer}
+    },{
+      binding:2,
+      resource:{buffer:BrushBuffer}
+    }
+]
+}
+
+)
+
+const emptyLayout =
+  device.createBindGroupLayout({
+    entries: []
+});
+
+const renderPipelineLayout = device.createPipelineLayout({bindGroupLayouts:[mouseGroupLayout,renderGroupLayout,fieldLayout]})
+const computePipelineLayout = device.createPipelineLayout({bindGroupLayouts:[mouseGroupLayout,pongGroupLayout,fieldLayout]})
+
+const renderPipeline = device.createRenderPipeline({
+    label:" RAHRAH",
+    layout: renderPipelineLayout,
+    vertex:{
+        module:shaderModule,
+        entryPoint:"v1"
+    },
+    fragment:{
+        module:shaderModule,
+        entryPoint:"f1",
+        targets:[{
+    format:"bgra8unorm",
+
+    blend: {
+        color: {
+            srcFactor: "src-alpha",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+        },
+
+        alpha: {
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+            operation: "add",
+        }
+    }
+}]
+    }
+})
+const backgroundPipeline = device.createRenderPipeline({
+    label:" hah",
+    layout: "auto",
+    vertex:{
+        module:backgroundModule,
+        entryPoint:"v1"
+    },
+    fragment:{
+        module:backgroundModule,
+        entryPoint:"f1",
+        targets:[{format:"bgra8unorm"}]
+    }
+})
+let isPressed = 0
+let brushSize = 0.1
+canvas.addEventListener("mousedown", () => {
+  isPressed = 1;
+  mouseUpdate()
+});
+
+canvas.addEventListener("mouseup", () => {
+  isPressed = 0;
+  mouseUpdate()
+});
+canvas.addEventListener("mousemove",(e)=>{
+mouseX = (e.offsetX / canvas.clientWidth);
+mouseY = (e.offsetY / canvas.clientHeight);
+  })
+
+let lastX = 0
+let lastY = 0
+const computePipeline = device.createComputePipeline({
+  layout: computePipelineLayout,
+  compute: {
+    module: shaderModule,
+    entryPoint: "c1",
+  },
+});
+
+
+
+
+const computeA = device.createBindGroup({
+  layout:pongGroupLayout,
+  entries: [
+    { binding: 0, resource: texWrite.createView() ,label:"DA BINDING"}, // read
+    { binding: 1, resource: texRead.createView() }  // write
+  ]
+});
+
+const renderA = device.createBindGroup({
+  layout: renderGroupLayout,
+  entries: [
+    { binding: 0, resource: texRead.createView() },
+    { binding: 1, resource: sampler }
+  ]
+});
+
+
+
+
+var isPlaying = true
+
+
+const button = document.getElementById("daPlayer");
+
+button.addEventListener("click", Pause);
+      
+function Pause(){
+  isPlaying = !isPlaying
+
+}
+
+let ping = 0
+
+async function inspectGPU() {
+  const adapter = await navigator.gpu.requestAdapter();
+
+  console.log("maxComputeWorkgroupSizeX:", adapter.limits.maxComputeWorkgroupSizeX);
+  console.log("maxComputeWorkgroupSizeY:", adapter.limits.maxComputeWorkgroupSizeY);
+  console.log("maxComputeWorkgroupSizeZ:", adapter.limits.maxComputeWorkgroupSizeZ);
+
+  console.log("maxComputeInvocationsPerWorkgroup:", adapter.limits.maxComputeInvocationsPerWorkgroup);
+
+  console.log("maxStorageBufferBindingSize:", adapter.limits.maxStorageBufferBindingSize);
+
+  console.log("maxComputeWorkgroupsPerDimension:", adapter.limits.maxComputeWorkgroupsPerDimension);
+}
+inspectGPU();
+
+
+const fpsText = document.getElementById("fps");
+
+let lastTime = performance.now();
+let frames = 0;
+let fps = 0;
+let pingBuffer = inputBuffer;
+let pongBuffer = outputBuffer;
+function createFieldBindGroup(readBuf, writeBuf) {
+  return device.createBindGroup({
+    layout: fieldLayout,
+    entries: [
+      { binding: 0, resource: { buffer: readBuf } },
+      { binding: 1, resource: { buffer: writeBuf } }
+    ]
+  });
+}
+
+let pingBindGroup =
+  createFieldBindGroup(inputBuffer, outputBuffer);
+
+let pongBindGroup =
+  createFieldBindGroup(outputBuffer, inputBuffer);
+
+
+
+const DaColorPicker = new window.iro.ColorPicker("#RAHPICKER")
+
+function frame(now) {
+
+  frames++;
+
+  // update every 0.25 sec
+  if (now - lastTime >= 250) {
+
+    fps =
+      frames * 1000 /
+      (now - lastTime);
+
+    fpsText.textContent =
+      `FPS: ${fps.toFixed(1)}`;
+
+    frames = 0;
+    lastTime = now;
+  }
+
+
+  if(isPlaying){
+
+  console.log("PLAYING")
+
+
+
+
+  const encoder = device.createCommandEncoder()
+  
+if (mouseX !== lastX || mouseY !== lastY) {
+
+mouseUpdate();
+}
+  
+
+const currentFieldBindGroup = ping ? pongBindGroup : pingBindGroup;
+
+    
+const computePass = encoder.beginComputePass();
+computePass.setPipeline(computePipeline)
+computePass.setBindGroup(1,computeA)
+computePass.setBindGroup(0,mouseBind)
+computePass.setBindGroup(2,currentFieldBindGroup);
+const workGroupWidth = 32;
+const workGroupHeight = 8
+
+computePass.dispatchWorkgroups(
+  Math.ceil(gridWidth / workGroupWidth),
+  Math.ceil(gridHeight / workGroupHeight)
+);
+
+computePass.end()
+
+
+
+const renderPass = encoder.beginRenderPass({colorAttachments:[{view:ctx.getCurrentTexture().createView(),storeOp:"store",loadOp:"load"}]}) 
+
+renderPass.setPipeline(backgroundPipeline);
+renderPass.draw(6)
+
+
+renderPass.setBindGroup(1,renderA)
+renderPass.setBindGroup(0,mouseBind)
+renderPass.setBindGroup(2,currentFieldBindGroup);
+
+
+
+renderPass.setPipeline(renderPipeline)
+
+renderPass.draw(6)
+
+
+
+
+
+renderPass.end()
+
+
+
+
+
+//encoder.copyTextureToBuffer(
+  //{
+   // texture: texRead
+  //},
+  //{
+   // buffer: readBuffer,
+    //bytesPerRow: 256 * 4
+  //},
+  //{
+   // width: 256,
+    //height: 256,
+    //depthOrArrayLayers: 1
+  //}
+//);
+
+const commandBuffer = encoder.finish()
+
+
+
+device.queue.submit([commandBuffer])
+//await readBuffer.mapAsync(GPUMapMode.READ);
+
+//const copy = readBuffer.getMappedRange();
+
+//const array = new Uint8Array(copy);
+
+//console.log(array[0]);
+
+//readBuffer.unmap();
+ping ^= 1;
+}
+    requestAnimationFrame(frame)
+}
+
+requestAnimationFrame(frame)
+
+  function mouseUpdate(){
+    var dx = mouseX - lastX;
+    var dy = mouseY - lastY;
+    lastX = mouseX
+    lastY = mouseY
+    device.queue.writeBuffer(
+  DaMouseBuffer,
+  0,
+  new Float32Array([
+  mouseX,
+  mouseY,
+  brushSize,
+  isPressed,
+  canvas.width,
+  canvas.height,
+  dx,
+  dy
+]));
+
+
+
+let insertion = DaColorPicker.color.rgba
+    device.queue.writeBuffer(
+  BrushBuffer,
+  0,
+
+  new Float32Array([
+    insertion.r/255,
+    insertion.g/255,
+    insertion.b/255,
+    1
+]));
+}
+
+
+  
+
+
+
+
+
+  </script>
+
+
+
+</body>
+</html>
