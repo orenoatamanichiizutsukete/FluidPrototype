@@ -1,32 +1,144 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Basic JS Link</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>WebGPU Fluid</title>
+
+<style>
+html, body {
+    margin: 0;
+    overflow: hidden;
+    background: black;
+}
+
+#c {
+    width: 100vw;
+    height: 100vh;
+    display: block;
+    image-rendering: pixelated;
+}
+
+#fps {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    color: white;
+    font-family: monospace;
+    z-index: 10;
+}
+
+#RAHPICKER {
+    position: fixed;
+    top: 50px;
+    left: 10px;
+    z-index: 10;
+}
+</style>
 </head>
+
 <body>
-    <div id="RAHPICKER" z-index:10; ></div>
-    <div id="fps"></div>
-   <canvas id="c" style="width: 100%; height: 100%; position: fixed; left: 0; top: 0; image-rendering: pixelated; z-index: 2;"></canvas>
-   <button id="daPlayer"> YAH YAH</button>
-  <button id="btn">Click me</button>
+
+<div id="fps"></div>
+<div id="RAHPICKER"></div>
+
+<canvas id="c"></canvas>
+
 <script src="https://cdn.jsdelivr.net/npm/@jaames/iro@5"></script>
 
 <script type="module">
-  const backgroundShader=`
 
-  
+const GRID_W = 256;
+const GRID_H = 256;
+
+const canvas = document.getElementById("c");
+
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+
+const adapter = await navigator.gpu.requestAdapter();
+
+const device = await adapter.requestDevice();
+
+const context = canvas.getContext("webgpu");
+
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+context.configure({
+    device,
+    format,
+    alphaMode: "opaque"
+});
+
+const shader = `
+
+struct MouseData {
+    mouse: vec2f,
+    brushSize: f32,
+    isPressed: f32,
+    canvasSize: vec2f,
+    mouseVelocity: vec2f,
+};
+
+struct Params {
+    width: u32,
+    height: u32,
+};
+
+@group(0) @binding(0)
+var<uniform> mouseData : MouseData;
+
+@group(0) @binding(1)
+var<uniform> params : Params;
+
+@group(0) @binding(2)
+var<uniform> brush : vec4f;
+
+@group(1) @binding(0)
+var velocityRead :
+texture_2d<f32>;
+
+@group(1) @binding(1)
+var velocityWrite :texture_storage_2d<rgba16float, write>;
+
+
+@group(1) @binding(2)
+var velSampler : sampler;
+@group(3) @binding(4)
+var divergenceWrite : texture_storage_2d<rgba16float, write>;
+
+@group(3) @binding(0)
+var pressureRead : texture_2d<f32>;
+
+@group(3) @binding(1)
+var pressureWrite :
+texture_storage_2d<rgba16float, write>;
+
+@group(3) @binding(2)
+var divergenceTex : texture_2d<f32>;
+
+@group(3) @binding(3)
+var pressureSampler : sampler;
+
+@group(2) @binding(2)
+var dyeSampler : sampler;
+
+
+
+@group(2) @binding(0)
+var dyeRead :
+texture_2d<f32>;
+
+@group(2) @binding(1)
+var dyeWrite :
+texture_storage_2d<rgba16float, write>;
+
 struct VSOut {
     @builtin(position) pos : vec4f,
 };
 
-
-
-
-
 @vertex
-fn v1(
+fn vs(
     @builtin(vertex_index) i : u32
 ) -> VSOut {
 
@@ -35,7 +147,7 @@ fn v1(
         vec2f( 1.0, -1.0),
         vec2f(-1.0,  1.0),
 
-        vec2f(-1,  1.0),
+        vec2f(-1.0,  1.0),
         vec2f( 1.0, -1.0),
         vec2f( 1.0,  1.0),
     );
@@ -48,940 +160,1128 @@ fn v1(
 }
 
 @fragment
-fn f1() -> @location(0) vec4f {
+fn fs(
+    @builtin(position) fragPos : vec4f
+) -> @location(0) vec4f {
 
-    // background color
-    return vec4f(1, 0.05, 0.08, 1.0);
-}
-`
-const shader =`
-@binding(0) @group(0) var<uniform> mouseValues: MouseData;
-@binding(2) @group(0) var<uniform> brush: vec4f;
-
-
-struct MouseData {
-    mouse: vec2<f32>,
-    brushSize: f32,
-    isPressed: f32,
-    canvasSize: vec2<f32>,
-    mouseVelocity: vec2<f32>
-}
-
-struct RahOut{
-    @builtin(position) pos :vec4f,
-    @location(0) color: vec4f,
-};
+    let uv =
+        fragPos.xy /
+        mouseData.canvasSize;
 
 
 
-struct Cell {
-  color: vec4f,
-  velocity : vec2f,
-  density : f32,
-  pressure : f32,
-  divergence : f32,
-};
+    let c =
+        textureSample(
+            dyeRead,
+            dyeSampler,
+            uv
+        );
 
-
-@group(2) @binding(0)
-var<storage, read> inputField: array<Cell>;
-
-@group(2) @binding(1)
-var<storage, read_write> outputField: array<Cell>;
-
-
-
-
-struct Params {
-  width: u32,
-  height: u32,
-};
-
-@group(0) @binding(1)
-var<uniform> params: Params;
-
-
-@vertex 
-fn v1(@builtin(vertex_index) i: u32) -> RahOut{
-var DAarray = array<vec4f,6>(
-vec4f(-1,-1,0,1),
-vec4f(1,-1,0,1),
-vec4f(-1,1,0,1),
-
-vec4f(-1,1,0,1),
-vec4f(1,-1,0,1),
-vec4f(1,1,0,1)
-);
-
-var returned: RahOut;
-returned.pos = DAarray[i];
-returned.color = vec4f(1,1,1,1);
-return returned;
-
+    return c;
 }
 
-@fragment
-fn f1(@builtin(position) fragPos: vec4<f32>) -> @location(0) vec4f {
-let uv = fragPos.xy / mouseValues.canvasSize.xy;
-  let gx = u32(uv.x * f32(params.width));
-  let gy = u32(uv.y * f32(params.height));
-
-  // clamp safety
-  let x = min(gx, params.width  - 1u);
-  let y = min(gy, params.height - 1u);
-
-  // -----------------------------------
-  // INDEX
-  // -----------------------------------
-
-  let index = y * params.width + x;
-
-  // -----------------------------------
-  // READ BUFFER
-  // -----------------------------------
-
-  let value = inputField[index].color;
-
-return value;
-}
-
-
-var<workgroup> tile: array<array<Cell, 32+2>, 8+2>;
-@compute @workgroup_size(32, 8)
-fn c1(
-  @builtin(local_invocation_id) lid3 : vec3<u32>,
-  @builtin(workgroup_id) wid : vec3<u32>
+@compute @workgroup_size(8,8)
+fn computeDivergence(
+    @builtin(global_invocation_id)
+    gid : vec3<u32>
 ) {
 
+    if (
+        gid.x >= params.width ||
+        gid.y >= params.height
+    ) {
+        return;
+    }
 
-let width = 32u;
-let height = 8u;
-  // --------------------------------------------------
-  // STEP 1:
-  // FLATTEN THREAD ID
-  // --------------------------------------------------
+    let size =
+        vec2f(
+            f32(params.width),
+            f32(params.height)
+        );
 
-  let lx = lid3.x;
-  let ly = lid3.y;
+    let uv =
+        (vec2f(gid.xy) + 0.5) / size;
 
-  // 0..255
-  let lid = ly * width + lx;
+    let texel =
+        1.0 / size;
 
-  // --------------------------------------------------
-  // STEP 2:
-  // TILE INFO
-  // --------------------------------------------------
+    let left =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv - vec2f(texel.x, 0.0),
+            0.0
+        ).x;
 
-  let TILE_W = width+ 2u;
-  let TILE_H = height+2u;
+    let right =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv + vec2f(texel.x, 0.0),
+            0.0
+        ).x;
 
-  let TILE_SIZE = TILE_W * TILE_H; // 340
+    let bottom =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv - vec2f(0.0, texel.y),
+            0.0
+        ).y;
 
-  // --------------------------------------------------
-  // STEP 3:
-  // COOPERATIVE STRIDED LOAD
-  // --------------------------------------------------
+    let top =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv + vec2f(0.0, texel.y),
+            0.0
+        ).y;
 
-  // every thread loads:
-  // i = lid
-  // then i += 256
-  // until full tile covered
+    let div =
+        0.5 * (
+            (right - left) +
+            (top - bottom)
+        );
 
-  for (var i = lid; i < TILE_SIZE; i += 256u) {
-
-    // ----------------------------------------------
-    // STEP 4:
-    // CONVERT LINEAR TILE INDEX -> TILE XY
-    // ----------------------------------------------
-
-    let tx = i % TILE_W;
-    let ty = i / TILE_W;
-
-    // ----------------------------------------------
-    // STEP 5:
-    // CONVERT TILE XY -> GLOBAL XY
-    //
-    // subtract 1 because halo expands outward
-    // ----------------------------------------------
-
-    let gx =
-  i32(wid.x * width) +
-  i32(tx) - 1;
-    let gy = i32(wid.y * height)  + i32(ty) - 1;
-
-    // ----------------------------------------------
-    // STEP 6:
-    // CLAMP TO DOMAIN
-    // avoids branches
-    // ----------------------------------------------
-
-    let cgx = clamp(gx, 0, i32(params.width)  - 1);
-    let cgy = clamp(gy, 0, i32(params.height) - 1);
-
-    // ----------------------------------------------
-    // STEP 7:
-    // GLOBAL INDEX
-    // ----------------------------------------------
-
-    let index =
-      u32(cgy) * params.width +
-      u32(cgx);
-
-    // ----------------------------------------------
-    // STEP 8:
-    // LOAD INTO SHARED MEMORY TILE
-    // ----------------------------------------------
-
-    tile[ty][tx].color = inputField[index].color;
-    tile[ty][tx].velocity = inputField[index].velocity;
-  }
-
-  // --------------------------------------------------
-  // STEP 9:
-  // WAIT UNTIL ENTIRE TILE IS FILLED
-  // --------------------------------------------------
-
-  workgroupBarrier();
-
-  // --------------------------------------------------
-  // STEP 10:
-  // INTERIOR THREAD COORDS
-  //
-  // interior starts at +1 because halo occupies edges
-  // --------------------------------------------------
-
-   let tx = lx + 1u;
-  let ty = ly + 1u;
-
-  // --------------------------------------------------
-  // OUTPUT COORDS
-  // --------------------------------------------------
-
-  let outX =
-    wid.x * width + lx;
-
-  let outY =
-    wid.y * height + ly;
-
-  // --------------------------------------------------
-  // BOUNDS CHECK
-  // --------------------------------------------------
-
-  if (
-    outX >= params.width ||
-    outY >= params.height
-  ) {
-    return;
-  }
-
-  // --------------------------------------------------
-  // STENCIL READ
-  // --------------------------------------------------
-
-let l = tile[ty][tx - 1u].velocity;
-let r = tile[ty][tx + 1u].velocity;
-let u = tile[ty - 1u][tx].velocity;
-let d = tile[ty + 1u][tx].velocity;
-
-let c = tile[ty][tx].velocity;
-
-  // --------------------------------------------------
-  // STENCIL COMPUTE
-  // --------------------------------------------------
-let uv =
-    (vec2f(f32(outX)+0.5, f32(outY)+0.5))
-    / vec2f(f32(params.width - 1), f32(params.height -1));
-
-    let outIndex =
-    outY * params.width + outX;
-
-
-
-
-    
-let velocity =
-    tile[ty][tx].velocity;
-
-    let dt = 0.016;
-    let prevUV =
-        uv - velocity * dt;
-
-    let safeUV =
-    clamp(
-        prevUV,
-        vec2f(0.0),
-        vec2f(1.0)
+    textureStore(
+        divergenceWrite,
+        vec2i(gid.xy),
+        vec4f(div, 0.0, 0.0, 0.0)
     );
+}
 
-    let sampleX =
-    u32(
-        safeUV.x *
-        f32(params.width - 1u)
-    );
+@compute @workgroup_size(8,8)
+fn pressureSolve(
+    @builtin(global_invocation_id)
+    gid : vec3<u32>
+) {
 
-let sampleY =
-    u32(
-        safeUV.y *
-        f32(params.height - 1u)
-    );
+    if (
+        gid.x >= params.width ||
+        gid.y >= params.height
+    ) {
+        return;
+    }
 
-    let sampleIndex =
-    sampleY * params.width +
-    sampleX;
+    let size =
+        vec2f(
+            f32(params.width),
+            f32(params.height)
+        );
 
-    let advectedColor = inputField[sampleIndex].color;
-    
+    let uv =
+        (vec2f(gid.xy) + 0.5) / size;
 
+    let texel =
+        1.0 / size;
 
-    
+    let left =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv - vec2f(texel.x, 0.0),
+            0.0
+        ).x;
 
-  let result =
-      advectedColor;
+    let right =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv + vec2f(texel.x, 0.0),
+            0.0
+        ).x;
 
-  // --------------------------------------------------
-  // UV
-  // --------------------------------------------------
+    let bottom =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv - vec2f(0.0, texel.y),
+            0.0
+        ).x;
 
+    let top =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv + vec2f(0.0, texel.y),
+            0.0
+        ).x;
 
-  // --------------------------------------------------
-  // MOUSE DISTANCE
-  // --------------------------------------------------
-  let mousePos = mouseValues.mouse.xy;
-  let mouseRad = mouseValues.brushSize;
-  let diff =
-    uv - mousePos;
-
-  let distSq =
-    dot(diff, diff);
-
-  let radiusSq =
-    mouseRad *
-    mouseRad;
-
-  // --------------------------------------------------
-  // BRUSH MASK
-  // --------------------------------------------------
-
-  let pressedInfluence = select(
-      0.0,
-      1.0,
-      distSq < radiusSq
-    );
-
-  let influence =
-    select(
-      0.0,
-      1.0,
-      distSq < radiusSq
-    ) * mouseValues.isPressed;
-
-  // --------------------------------------------------
-  // DYE
-  // --------------------------------------------------
-
-  let dyeColor = brush;
-
-    let advectedVelocity =
-    inputField[sampleIndex].velocity;
-    
-    let laplacian =
-    (l + r + u + d - 4.0 * c);
-
-    let viscosity = 0.0005;
-
-    let diffusedVelocity =
-    advectedVelocity +
-    viscosity * laplacian;
-
-    let injectedVelocity =
-    mouseValues.mouseVelocity;
-
-    let divergence  = (r.x - l.x + d.y - u.y) * 0.5; 
-
-    outputField[outIndex].divergence
+    let divergence =
+        textureSampleLevel(
+            divergenceTex,
+            pressureSampler,
+            uv,
+            0.0
+        ).x;
 
     let pressure =
-(
-    leftPressure +
-    rightPressure +
-    upPressure +
-    downPressure -
-    divergence
-) * 0.25;
-let finalVelocity =
-    mix(
-        diffusedVelocity,
-        injectedVelocity,
-        influence
+        (
+            left +
+            right +
+            bottom +
+            top -
+            divergence
+        ) * 0.25;
+
+    textureStore(
+        pressureWrite,
+        vec2i(gid.xy),
+        vec4f(
+            pressure,
+            0.0,
+            0.0,
+            0.0
+        )
+    );
+}
+
+@compute @workgroup_size(8, 8)
+fn advect(
+    @builtin(global_invocation_id)
+    gid : vec3<u32>
+) {
+
+    if (
+        gid.x >= params.width ||
+        gid.y >= params.height
+    ) {
+        return;
+    }
+
+
+
+    let uv =
+        (vec2f(gid.xy) + 0.5) /
+        vec2f(
+            f32(params.width),
+            f32(params.height)
+        );
+
+    let vel =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv,
+            0.0
+        ).xy;
+
+    let dt = 0.016;
+
+    let prevUV =
+        clamp(
+            uv - vel * dt,
+            vec2f(0.0),
+            vec2f(1.0)
+        );
+
+
+    var dye =
+        textureSampleLevel(
+            dyeRead,
+            dyeSampler,
+            prevUV,
+            0.0
+        );
+
+    var advectedVelocity = textureSampleLevel(velocityRead,velSampler,prevUV,0.0).xy;
+
+    let mouseDiff =
+        uv - mouseData.mouse;
+
+    let distSq =
+        dot(mouseDiff, mouseDiff);
+        let pos =
+    vec2i(
+        i32(gid.x),
+        i32(gid.y)
     );
 
+    let radiusSq =
+        mouseData.brushSize *
+        mouseData.brushSize;
+
+    let influence =
+        select(
+            0.0,
+            1.0,
+            distSq < radiusSq
+        ) * mouseData.isPressed;
+    let flexInfluence =
+        select(
+            0.0,
+            1.0,
+            distSq < radiusSq
+        );
+    dye =
+        mix(
+            dye,
+            brush,
+            influence
+        );
+
+    var finalVelocity =
+        mix(
+            advectedVelocity,
+            mouseData.mouseVelocity * 200.0,
+            flexInfluence
+        );
+    finalVelocity *= 0.9;
     
-let finalResult =
-    result * (1.0 - influence) +
-    dyeColor * influence;
+    textureStore(
+        dyeWrite,
+        pos,
+        dye
+    );
 
-  // --------------------------------------------------
-  // WRITE OUTPUT
-  // --------------------------------------------------
+    textureStore(
+        velocityWrite,
+        pos,
+        vec4f(
+            finalVelocity,
+            0.0,0.0
+        )
+    );
+}
 
-  outputField[outIndex].color = vec4f(finalVelocity.x,finalVelocity.y,0,1);
-  outputField[outIndex].density = 0;
-  outputField[outIndex].pressure += 0.01;
-  outputField[outIndex].velocity = finalVelocity;
+@compute @workgroup_size(8,8)
+fn project(
+    @builtin(global_invocation_id)
+    gid : vec3<u32>
+) {
 
+    if (
+        gid.x >= params.width ||
+        gid.y >= params.height
+    ) {
+        return;
     }
-`
 
-const gridWidth = 256
-const gridHeight = 256
+    let size =
+        vec2f(
+            f32(params.width),
+            f32(params.height)
+        );
 
-const adapter = await navigator.gpu.requestAdapter()
+    let uv =
+        (vec2f(gid.xy) + 0.5) / size;
+
+    let texel =
+        1.0 / size;
+
+    // CURRENT VELOCITY
+    var velocity =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv,
+            0.0
+        ).xy;
+
+    // NEIGHBOR PRESSURES
+    let left =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv - vec2f(texel.x, 0.0),
+            0.0
+        ).x;
+
+    let right =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv + vec2f(texel.x, 0.0),
+            0.0
+        ).x;
+
+    let bottom =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv - vec2f(0.0, texel.y),
+            0.0
+        ).x;
+
+    let top =
+        textureSampleLevel(
+            pressureRead,
+            pressureSampler,
+            uv + vec2f(0.0, texel.y),
+            0.0
+        ).x;
+
+    // PRESSURE GRADIENT
+    let gradient =
+        vec2f(
+            right - left,
+            top - bottom
+        ) * 0.5;
+
+    // REMOVE DIVERGENCE
+    velocity -= gradient;
+
+    textureStore(
+        velocityWrite,
+        vec2i(gid.xy),
+        vec4f(
+            velocity,
+            0.0,
+            0.0
+        )
+    );
+}
 
 
-console.log(adapter.limits.maxComputeWorkgroupSizeX);
-console.log(adapter.limits.maxComputeWorkgroupSizeY);
-console.log(adapter.limits.maxComputeWorkgroupSizeZ);
-
-console.log(adapter.limits.maxComputeInvocationsPerWorkgroup);
-console.log(adapter.limits.maxBindingsPerBindGroup)
-
-console.log("DA GPU",adapter.info);
-
-const device = await adapter.requestDevice()
 
 
+`;
 
-
-
-const fieldLayout =
-  device.createBindGroupLayout({
-
-    entries: [
-
-      {
-        binding: 0,
-
-        visibility:
-          GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
-
-        buffer: {
-          type: "read-only-storage"
-        }
-      },
-
-      {
-        binding: 1,
-
-        visibility:
-          GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
-
-        buffer: {
-          type: "storage"
-        }
-      }
-
-    ]
+const shaderModule =
+device.createShaderModule({
+    code: shader
 });
+const divergence =
+createPingPong("rgba16float");
 
-const CELL_SIZE = 52
-const outputBuffer =
-  device.createBuffer({
+function createTexture(format) {
 
-    size: gridWidth*gridHeight * CELL_SIZE,
+    return device.createTexture({
 
+        size: [GRID_W, GRID_H],
+
+        format,
+
+        usage:
+            GPUTextureUsage.STORAGE_BINDING |
+            GPUTextureUsage.TEXTURE_BINDING |
+            GPUTextureUsage.RENDER_ATTACHMENT |
+            GPUTextureUsage.COPY_DST
+
+    });
+
+}
+
+function createPingPong(format) {
+
+    return {
+
+        read: createTexture(format),
+        write: createTexture(format)
+
+    };
+
+}
+
+function swap(field) {
+
+    [field.read, field.write] =
+    [field.write, field.read];
+
+}
+
+const velocity =
+createPingPong("rgba16float");
+
+const dye =
+createPingPong("rgba16float");
+
+const mouseBuffer =
+device.createBuffer({
+    size: 32,
     usage:
-      GPUBufferUsage.STORAGE |
-      GPUBufferUsage.COPY_SRC
+        GPUBufferUsage.UNIFORM |
+        GPUBufferUsage.COPY_DST
 });
 
-const inputBuffer =
-  device.createBuffer({
-
-    size: gridWidth*gridHeight * CELL_SIZE,
-
+const paramsBuffer =
+device.createBuffer({
+    size: 16,
     usage:
-      GPUBufferUsage.STORAGE |
-      GPUBufferUsage.COPY_DST
+        GPUBufferUsage.UNIFORM |
+        GPUBufferUsage.COPY_DST
 });
 
-
-
-
-const paramsBuffer = device.createBuffer({
-  size: 16,
-  usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+const brushBuffer =
+device.createBuffer({
+    size: 16,
+    usage:
+        GPUBufferUsage.UNIFORM |
+        GPUBufferUsage.COPY_DST
 });
 
-
-const paramsData = new Uint32Array([
-  gridWidth,
-  gridHeight,
-  0,
-  0
-]);
 device.queue.writeBuffer(
-  paramsBuffer,
-  0,
-  paramsData
+    paramsBuffer,
+    0,
+    new Uint32Array([
+        GRID_W,
+        GRID_H,
+        0,
+        0
+    ])
 );
 
+const uniformLayout =
+device.createBindGroupLayout({
 
+    entries: [
 
-const shaderModule = device.createShaderModule({
-    code: shader})
-const backgroundModule = device.createShaderModule({
-  code: backgroundShader
-})
-const canvas = document.getElementById("c")
-
-const ctx = canvas.getContext("webgpu")
-ctx.configure({device: device,
-    format: navigator.gpu.getPreferredCanvasFormat()
-})
-var mouseX = 0;
-var mouseY = 0;
-
-
-const DaPaintTexture = device.createTexture({format:"r32float",size: [9,9,1],usage:GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST})
-const RahTexture = device.createTexture({format:"r32uint",size:[1,1,1], usage:GPUTextureUsage.TEXTURE_BINDING })
-
-const gpuTexture = device.createTexture({format:"r16float",size: [16,16,1],usage: GPUTextureUsage.RENDER_ATTACHMENT})
-
-const texWrite = device.createTexture({
-  size: [2560, 2560, 1],
-  format: "rgba8unorm",
-  usage:
-    GPUTextureUsage.TEXTURE_BINDING |
-    GPUTextureUsage.COPY_DST |
-      GPUTextureUsage.COPY_SRC |
-    GPUTextureUsage.STORAGE_BINDING
-});
-
-const texRead = device.createTexture({
-  size: [256, 256, 1],
-  format: "rgba8unorm",
-  usage:
-    GPUTextureUsage.TEXTURE_BINDING |
-    GPUTextureUsage.COPY_DST |
-    GPUTextureUsage.COPY_SRC |
-    GPUTextureUsage.STORAGE_BINDING
-});
-
-const DaMouseBuffer = device.createBuffer({mappedAtCreation:false,size:32,usage:GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST})
-const BrushBuffer = device.createBuffer({mappedAtCreation:false,size:32,usage:GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST})
-
-
-
-//encoder.copyTextureToTexture({texture:DaPaintTexture}
-const sampler = device.createSampler({
-  magFilter: "nearest",
-  minFilter: "nearest"
-});
-const pongGroupLayout = device.createBindGroupLayout({entries:[
-    {
-      binding: 0,
-      visibility: GPUShaderStage.COMPUTE,
-      storageTexture: {
-        access: "read-only",
-        format: "rgba8unorm"
-      }
-    },
-    {
-      binding: 1,
-      visibility: GPUShaderStage.COMPUTE, 
-      storageTexture: {
-        access: "write-only",
-        format: "rgba8unorm"
-      }
-    }
-]}
-)
-
-const renderGroupLayout = device.createBindGroupLayout({entries:[
-    {
-      binding: 1,
-      visibility: GPUShaderStage.FRAGMENT,
-      sampler: {}
-    },
-    {
-    binding:0,
-    visibility: GPUShaderStage.FRAGMENT,
-      texture: {
-        sampleType: "float"
-      }
-    }
-]}
-)
-
-//const readBuffer = device.createBuffer({
-  //size: 256 * 256 * 4,
-  //usage:
-   // GPUBufferUsage.COPY_DST |
-    //GPUBufferUsage.MAP_READ
-//});
-
-
-
-const mouseGroupLayout = device.createBindGroupLayout({
-  entries: [
-    {
-      binding: 0,
-      visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
-      buffer: { type: "uniform" }
-    },
         {
-      binding: 1,
-      visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
-      buffer: { type: "uniform" }
-    },{
-      binding: 2,
-      visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE,
-      buffer: { type: "uniform" }
-    }
-  ]
-});
-    
-
-const mouseBind = device.createBindGroup({layout:mouseGroupLayout,entries:[
-    {
-        binding:0,
-        resource:{buffer:DaMouseBuffer}
-    },
-    {
-      binding:1,
-      resource:{buffer:paramsBuffer}
-    },{
-      binding:2,
-      resource:{buffer:BrushBuffer}
-    }
-]
-}
-
-)
-
-const emptyLayout =
-  device.createBindGroupLayout({
-    entries: []
-});
-
-const renderPipelineLayout = device.createPipelineLayout({bindGroupLayouts:[mouseGroupLayout,renderGroupLayout,fieldLayout]})
-const computePipelineLayout = device.createPipelineLayout({bindGroupLayouts:[mouseGroupLayout,pongGroupLayout,fieldLayout]})
-
-const renderPipeline = device.createRenderPipeline({
-    label:" RAHRAH",
-    layout: renderPipelineLayout,
-    vertex:{
-        module:shaderModule,
-        entryPoint:"v1"
-    },
-    fragment:{
-        module:shaderModule,
-        entryPoint:"f1",
-        targets:[{
-    format:"bgra8unorm",
-
-    blend: {
-        color: {
-            srcFactor: "src-alpha",
-            dstFactor: "one-minus-src-alpha",
-            operation: "add",
+            binding: 0,
+            visibility:
+                GPUShaderStage.COMPUTE |
+                GPUShaderStage.FRAGMENT,
+            buffer: {
+                type: "uniform"
+            }
         },
 
-        alpha: {
-            srcFactor: "one",
-            dstFactor: "one-minus-src-alpha",
-            operation: "add",
+        {
+            binding: 1,
+            visibility:
+                GPUShaderStage.COMPUTE |
+                GPUShaderStage.FRAGMENT,
+            buffer: {
+                type: "uniform"
+            }
+        },
+
+        {
+            binding: 2,
+            visibility:
+                GPUShaderStage.COMPUTE |
+                GPUShaderStage.FRAGMENT,
+            buffer: {
+                type: "uniform"
+            }
         }
-    }
-}]
-    }
-})
-const backgroundPipeline = device.createRenderPipeline({
-    label:" hah",
-    layout: "auto",
-    vertex:{
-        module:backgroundModule,
-        entryPoint:"v1"
-    },
-    fragment:{
-        module:backgroundModule,
-        entryPoint:"f1",
-        targets:[{format:"bgra8unorm"}]
-    }
-})
-let isPressed = 0
-let brushSize = 0.1
-canvas.addEventListener("mousedown", () => {
-  isPressed = 1;
-  mouseUpdate()
-});
 
-canvas.addEventListener("mouseup", () => {
-  isPressed = 0;
-  mouseUpdate()
-});
-canvas.addEventListener("mousemove",(e)=>{
-mouseX = (e.offsetX / canvas.clientWidth);
-mouseY = (e.offsetY / canvas.clientHeight);
-  })
-
-let lastX = 0
-let lastY = 0
-const computePipeline = device.createComputePipeline({
-  layout: computePipelineLayout,
-  compute: {
-    module: shaderModule,
-    entryPoint: "c1",
-  },
-});
-
-
-
-
-const computeA = device.createBindGroup({
-  layout:pongGroupLayout,
-  entries: [
-    { binding: 0, resource: texWrite.createView() ,label:"DA BINDING"}, // read
-    { binding: 1, resource: texRead.createView() }  // write
-  ]
-});
-
-const renderA = device.createBindGroup({
-  layout: renderGroupLayout,
-  entries: [
-    { binding: 0, resource: texRead.createView() },
-    { binding: 1, resource: sampler }
-  ]
-});
-
-
-
-
-var isPlaying = true
-
-
-const button = document.getElementById("daPlayer");
-
-button.addEventListener("click", Pause);
-      
-function Pause(){
-  isPlaying = !isPlaying
-
-}
-
-let ping = 0
-
-async function inspectGPU() {
-  const adapter = await navigator.gpu.requestAdapter();
-
-  console.log("maxComputeWorkgroupSizeX:", adapter.limits.maxComputeWorkgroupSizeX);
-  console.log("maxComputeWorkgroupSizeY:", adapter.limits.maxComputeWorkgroupSizeY);
-  console.log("maxComputeWorkgroupSizeZ:", adapter.limits.maxComputeWorkgroupSizeZ);
-
-  console.log("maxComputeInvocationsPerWorkgroup:", adapter.limits.maxComputeInvocationsPerWorkgroup);
-
-  console.log("maxStorageBufferBindingSize:", adapter.limits.maxStorageBufferBindingSize);
-
-  console.log("maxComputeWorkgroupsPerDimension:", adapter.limits.maxComputeWorkgroupsPerDimension);
-}
-inspectGPU();
-
-
-const fpsText = document.getElementById("fps");
-
-let lastTime = performance.now();
-let frames = 0;
-let fps = 0;
-let pingBuffer = inputBuffer;
-let pongBuffer = outputBuffer;
-function createFieldBindGroup(readBuf, writeBuf) {
-  return device.createBindGroup({
-    layout: fieldLayout,
-    entries: [
-      { binding: 0, resource: { buffer: readBuf } },
-      { binding: 1, resource: { buffer: writeBuf } }
     ]
-  });
+
+});
+const linearSampler =
+device.createSampler({
+
+    magFilter: "linear",
+    minFilter: "linear",
+
+});
+const pressureLayout = device.createBindGroupLayout({
+    entries: [
+        {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            texture: {
+                sampleType: "float"
+            }
+        },
+        {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+                access: "write-only",
+                format: "rgba16float"
+            }
+        },
+        {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            texture: {
+                sampleType: "float"
+            }
+        },
+        {
+            binding: 3,
+            visibility: GPUShaderStage.COMPUTE,
+            sampler: {
+                type: "filtering"
+            }
+        },
+        {
+            binding: 4,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+                access: "write-only",
+                format: "rgba16float"
+            }
+        }
+    ]
+});
+const velocityLayout =
+device.createBindGroupLayout({
+
+    entries: [
+
+        {
+            binding: 0,
+            visibility:
+                GPUShaderStage.COMPUTE ,
+            texture: {
+    sampleType: "float"}
+        },
+
+        {
+            binding: 1,
+            visibility:
+                GPUShaderStage.COMPUTE,
+            storageTexture: {
+                access: "write-only",
+                format: "rgba16float"
+            }
+        },        {
+            binding: 2,
+            visibility:
+                GPUShaderStage.COMPUTE |
+                GPUShaderStage.FRAGMENT,
+
+            sampler: {
+                type: "filtering"
+            }
+        }
+    ]
+
+});
+
+const dyeLayout =
+device.createBindGroupLayout({
+
+    entries: [
+
+        {
+            binding: 0,
+            visibility:
+                GPUShaderStage.COMPUTE |
+                GPUShaderStage.FRAGMENT,
+            texture: {
+                sampleType:"float"
+            }
+        },
+
+        {
+            binding: 1,
+            visibility:
+                GPUShaderStage.COMPUTE,
+            storageTexture: {
+                access: "write-only",
+                format:"rgba16float"
+            }
+        },{
+    binding: 2,
+    visibility:
+        GPUShaderStage.COMPUTE |
+        GPUShaderStage.FRAGMENT,
+
+    sampler: {
+        type: "filtering"
+    }
 }
 
-let pingBindGroup =
-  createFieldBindGroup(inputBuffer, outputBuffer);
+    ]
 
-let pongBindGroup =
-  createFieldBindGroup(outputBuffer, inputBuffer);
+});
 
+const uniformBind =
+device.createBindGroup({
 
+    layout: uniformLayout,
 
+    entries: [
 
+        {
+            binding: 0,
+            resource: {
+                buffer: mouseBuffer
+            }
+        },
 
-const DaColorPicker = new window.iro.ColorPicker("#RAHPICKER")
+        {
+            binding: 1,
+            resource: {
+                buffer: paramsBuffer
+            }
+        },
+
+        {
+            binding: 2,
+            resource: {
+                buffer: brushBuffer
+            }
+        }
+
+    ]
+
+});
+
+function createVelocityBind() {
+
+    return device.createBindGroup({
+
+        layout: velocityLayout,
+
+        entries: [
+
+            {
+                binding: 0,
+                resource:
+                    velocity.read.createView()
+            },
+
+            {
+                binding: 1,
+                resource:
+                    velocity.write.createView()
+            },            {
+                binding: 2,
+                resource: linearSampler
+            }
+
+        ]
+
+    });
+
+}
+function createPressureBind() {
+    return device.createBindGroup({
+        layout: pressureLayout,
+        entries: [
+            {
+                binding: 0,
+                resource: pressure.read.createView()
+            },
+            {
+                binding: 1,
+                resource: pressure.write.createView()
+            },
+            {
+                binding: 2,
+                resource: divergence.read.createView()
+            },
+            {
+                binding: 3,
+                resource: linearSampler
+            },
+            {
+                binding: 4,
+                resource: divergence.write.createView()
+            }
+        ]
+    });
+}
+let pressureBind;
+function createDyeBind() {
+
+    return device.createBindGroup({
+
+        layout: dyeLayout,
+
+        entries: [
+
+            {
+                binding: 0,
+                resource:
+                    dye.read.createView()
+            },
+
+            {
+                binding: 1,
+                resource:
+                    dye.write.createView()
+            },{
+
+              binding:2,
+              resource:linearSampler
+            }
+
+        ]
+
+    });
+
+}
+
+let velocityBind =
+createVelocityBind();
+
+let dyeBind =
+createDyeBind();
+const projectPipeline =
+device.createComputePipeline({
+
+    layout:
+        device.createPipelineLayout({
+            bindGroupLayouts: [
+                uniformLayout,
+                velocityLayout,
+                dyeLayout,
+                pressureLayout
+            ]
+        }),
+
+    compute: {
+        module: shaderModule,
+        entryPoint: "computeDivergence"
+    }
+
+});
+const divergencePipeline =
+device.createComputePipeline({
+
+    layout:
+        device.createPipelineLayout({
+            bindGroupLayouts: [
+                uniformLayout,
+                velocityLayout,
+                dyeLayout,
+                pressureLayout
+            ]
+        }),
+
+    compute: {
+        module: shaderModule,
+        entryPoint: "computeDivergence"
+    }
+
+});
+const pressure =
+createPingPong("rgba16float");
+pressureBind = createPressureBind();
+const pressurePipeline =
+device.createComputePipeline({
+
+    layout:
+        device.createPipelineLayout({
+            bindGroupLayouts: [
+                uniformLayout,
+                velocityLayout,
+                dyeLayout,
+                pressureLayout
+            ]
+        }),
+
+    compute: {
+        module: shaderModule,
+        entryPoint: "pressureSolve"
+    }
+
+});
+const computePipeline =
+device.createComputePipeline({
+
+    layout:
+        device.createPipelineLayout({
+
+            bindGroupLayouts: [
+
+                uniformLayout,
+                velocityLayout,
+                dyeLayout,
+                pressureLayout
+
+            ]
+
+        }),
+
+    compute: {
+
+        module: shaderModule,
+        entryPoint: "advect"
+
+    }
+
+});
+
+const renderPipeline =
+device.createRenderPipeline({
+
+    layout:
+        device.createPipelineLayout({
+
+            bindGroupLayouts: [
+
+                uniformLayout,
+                velocityLayout,
+                dyeLayout
+
+            ]
+
+        }),
+
+    vertex: {
+
+        module: shaderModule,
+        entryPoint: "vs"
+
+    },
+
+    fragment: {
+
+        module: shaderModule,
+        entryPoint: "fs",
+
+        targets: [
+            { format }
+        ]
+
+    }
+
+});
+
+const picker =
+new iro.ColorPicker(
+    "#RAHPICKER"
+);
+
+let mouseX = 0;
+let mouseY = 0;
+
+let lastX = 0;
+let lastY = 0;
+
+let isPressed = 0;
+
+canvas.addEventListener(
+    "mousedown",
+    () => isPressed = 1
+);
+
+canvas.addEventListener(
+    "mouseup",
+    () => isPressed = 0
+);
+
+canvas.addEventListener(
+    "mousemove",
+    e => {
+
+        mouseX =
+            e.offsetX /
+            canvas.clientWidth;
+
+        mouseY =
+            e.offsetY /
+            canvas.clientHeight;
+
+    }
+);
+
+function updateMouse() {
+
+const dx =
+    (mouseX - lastX) * GRID_W / 100;
+
+const dy =
+    (mouseY - lastY) * GRID_H / 100;
+
+    lastX = mouseX;
+    lastY = mouseY;
+
+    device.queue.writeBuffer(
+
+        mouseBuffer,
+
+        0,
+
+        new Float32Array([
+
+            mouseX,
+            mouseY,
+
+            0.05,
+            isPressed,
+
+            canvas.width,
+            canvas.height,
+
+            dx,
+            dy
+
+        ])
+
+    );
+
+    const c =
+        picker.color.rgba;
+
+    device.queue.writeBuffer(
+
+        brushBuffer,
+
+        0,
+
+        new Float32Array([
+
+            c.r / 255,
+            c.g / 255,
+            c.b / 255,
+            1
+
+        ])
+
+    );
+
+}
+
+const fpsText =
+document.getElementById("fps");
+
+let lastTime =
+performance.now();
+
+let frames = 0;
 
 function frame(now) {
 
-  frames++;
+    frames++;
 
-  // update every 0.25 sec
-  if (now - lastTime >= 250) {
+    if (now - lastTime >= 500) {
 
-    fps =
-      frames * 1000 /
-      (now - lastTime);
+        fpsText.textContent =
+            "FPS: " +
+            (
+                frames * 1000 /
+                (now - lastTime)
+            ).toFixed(1);
 
-    fpsText.textContent =
-      `FPS: ${fps.toFixed(1)}`;
+        frames = 0;
 
-    frames = 0;
-    lastTime = now;
-  }
+        lastTime = now;
+    }
 
+    updateMouse();
 
-  if(isPlaying){
+    const encoder =
+    device.createCommandEncoder();
 
-  console.log("PLAYING")
+    const computePass =
+    encoder.beginComputePass();
 
+    computePass.setPipeline(
+        computePipeline
+    );
 
+    computePass.setBindGroup(
+        0,
+        uniformBind
+    );
+    
 
+    computePass.setBindGroup(
+        1,
+        velocityBind
+    );
 
-  const encoder = device.createCommandEncoder()
-  
-if (mouseX !== lastX || mouseY !== lastY) {
+    computePass.setBindGroup(
+        2,
+        dyeBind
+    );
+    computePass.setBindGroup(3, pressureBind);
+    computePass.dispatchWorkgroups(
+        Math.ceil(GRID_W / 8),
+        Math.ceil(GRID_H / 8)
+    );
+computePass.setPipeline(divergencePipeline);
 
-mouseUpdate();
-}
-  
-
-;
-
-const currentField =
-    ping ? pongBindGroup : pingBindGroup;
-
-
-
-
-const computePass = encoder.beginComputePass();
-computePass.setPipeline(computePipeline)
-computePass.setBindGroup(1,computeA)
-computePass.setBindGroup(0,mouseBind)
-computePass.setBindGroup(2,currentField);
-
-const workGroupWidth = 32;
-const workGroupHeight = 8
+computePass.setBindGroup(0, uniformBind);
+computePass.setBindGroup(1, velocityBind);
+computePass.setBindGroup(3, pressureBind);
 
 computePass.dispatchWorkgroups(
-  Math.ceil(gridWidth / workGroupWidth),
-  Math.ceil(gridHeight / workGroupHeight)
+    Math.ceil(GRID_W / 8),
+    Math.ceil(GRID_H / 8)
+);
+    computePass.setPipeline(
+        pressurePipeline
+    );
+for (let i = 0; i < 20; i++) {
+
+
+
+    computePass.setBindGroup(
+        3,
+        pressureBind
+    );
+
+    computePass.dispatchWorkgroups(
+    Math.ceil(GRID_W / 8),
+    Math.ceil(GRID_H / 8)
 );
 
-computePass.end()
+    swap(pressure);
 
-
-
-const renderPass = encoder.beginRenderPass({colorAttachments:[{view:ctx.getCurrentTexture().createView(),storeOp:"store",loadOp:"load"}]}) 
-
-renderPass.setPipeline(backgroundPipeline);
-renderPass.draw(6)
-
-
-renderPass.setBindGroup(1,renderA)
-renderPass.setBindGroup(0,mouseBind)
-renderPass.setBindGroup(2,currentField);
-
-
-
-renderPass.setPipeline(renderPipeline)
-
-renderPass.draw(6)
-
-
-
-
-
-renderPass.end()
-
-
-
-
-
-//encoder.copyTextureToBuffer(
-  //{
-   // texture: texRead
-  //},
-  //{
-   // buffer: readBuffer,
-    //bytesPerRow: 256 * 4
-  //},
-  //{
-   // width: 256,
-    //height: 256,
-    //depthOrArrayLayers: 1
-  //}
-//);
-
-const commandBuffer = encoder.finish()
-
-
-
-device.queue.submit([commandBuffer])
-//await readBuffer.mapAsync(GPUMapMode.READ);
-
-//const copy = readBuffer.getMappedRange();
-
-//const array = new Uint8Array(copy);
-
-//console.log(array[0]);
-
-//readBuffer.unmap();
-ping ^= 1;
-}
-    requestAnimationFrame(frame)
+    pressureBind =
+        createPressureBind();
 }
 
-requestAnimationFrame(frame)
-
-  function mouseUpdate(){
-    var dx = mouseX - lastX;
-    var dy = mouseY - lastY;
-    lastX = mouseX
-    lastY = mouseY
-    device.queue.writeBuffer(
-  DaMouseBuffer,
-  0,
-  new Float32Array([
-  mouseX,
-  mouseY,
-  brushSize,
-  isPressed,
-  canvas.width,
-  canvas.height,
-  dx,
-  dy
-]));
+    computePass.end();
 
 
 
-let insertion = DaColorPicker.color.rgba
-    device.queue.writeBuffer(
-  BrushBuffer,
-  0,
 
-  new Float32Array([
-    insertion.r/255,
-    insertion.g/255,
-    insertion.b/255,
-    1
-]));
+
+    const renderPass =
+    encoder.beginRenderPass({
+
+        colorAttachments: [{
+
+            view:
+                context
+                .getCurrentTexture()
+                .createView(),
+
+            clearValue: {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 1
+            },
+
+            loadOp: "clear",
+
+            storeOp: "store"
+
+        }]
+
+    });
+
+    renderPass.setPipeline(
+        renderPipeline
+    );
+
+    renderPass.setBindGroup(
+        0,
+        uniformBind
+    );
+
+    renderPass.setBindGroup(1,velocityBind)
+
+    renderPass.setBindGroup(
+        2,
+        dyeBind
+    );
+
+    renderPass.draw(6);
+
+    renderPass.end();
+
+    device.queue.submit([
+        encoder.finish()
+    ]);
+
+    swap(velocity);
+    swap(dye);
+
+    velocityBind =
+    createVelocityBind();
+
+    dyeBind =
+    createDyeBind();
+
+    requestAnimationFrame(frame);
+
 }
 
+requestAnimationFrame(frame);
 
-  
-
-
-
-
-
-  </script>
-
-
+</script>
 
 </body>
 </html>
