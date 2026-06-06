@@ -1,5 +1,6 @@
 {
   "dependencies": {
-    "@jaames/iro": "^5.5.2"
+    "@jaames/iro": "^5.5.2",
+    "spectorjs": "^0.9.30"
   }
 }
