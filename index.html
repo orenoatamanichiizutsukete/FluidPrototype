@@ -1168,8 +1168,7 @@ let frames = 0;
 device.lost.then(info => {
     console.error("DEVICE LOST", info);
 });
-let bindGroupA = createPressureBind();  // Uses buffer A
-let bindGroupB = createPressureBind();  // Uses buffer B
+
 async function frame(now) {
 
 
@@ -1242,7 +1241,7 @@ swap(divergence);
 }
 
 
-if(1 != 1){
+if(1 == 1){
     computePass.setPipeline(
         pressurePipeline
     );
@@ -1250,13 +1249,13 @@ if(1 != 1){
     for (let i = 0; i < 20; i++) {
     
     // Alternate between bind groups
-    const currentBindGroup = (i % 2 === 0) ? bindGroupA : bindGroupB;
-    computePass.setBindGroup(3, currentBindGroup);
+    computePass.setBindGroup(3, pressureBind);
     computePass.dispatchWorkgroups(
     Math.ceil(GRID_W / 8),
     Math.ceil(GRID_H / 8));
     
     swap(pressure);  // Swap your buffer references
+    pressureBind = createPressureBind(); // Recreate bind group with new buffer references
     
 }   
 }
@@ -1339,9 +1338,6 @@ console.log(err);
 
     swap(velocity);
     swap(dye);
-
-
-    await device.queue.onSubmittedWorkDone();
 
 
 
