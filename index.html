@@ -113,7 +113,7 @@ var pressureRead : texture_2d<f32>;
 
 @group(3) @binding(1)
 var pressureWrite :
-texture_storage_2d<rg32float, write>;
+texture_storage_2d<r32float, write>;
 
 @group(3) @binding(2)
 var divergenceRead : texture_2d<f32>;
@@ -547,6 +547,27 @@ fn project(
 
 
 `;
+export const gpuTracker = {
+    textures: new Map(),
+    buffers: new Map(),
+
+    addTexture(texture, info) {
+        this.textures.set(texture, info);
+    },
+
+    removeTexture(texture) {
+        this.textures.delete(texture);
+    },
+
+    addBuffer(buffer, info) {
+        this.buffers.set(buffer, info);
+    },
+
+    removeBuffer(buffer) {
+        this.buffers.delete(buffer);
+    }
+};
+
 
 const shaderModule =
 device.createShaderModule({
@@ -582,7 +603,7 @@ function createPingPong(format) {
     };
 
 }
-
+  
 function swap(field) {
 
     [field.read, field.write] =
@@ -834,9 +855,7 @@ device.createBindGroup({
 function createVelocityBind() {
 
     return device.createBindGroup({
-
         layout: velocityLayout,
-
         entries: [
 
             {
@@ -961,6 +980,7 @@ device.createComputePipeline({
 });
 const pressure =
 createPingPong("r32float");
+
 pressureBind = createPressureBind();
 const pressurePipeline =
 device.createComputePipeline({
@@ -1148,7 +1168,8 @@ let frames = 0;
 device.lost.then(info => {
     console.error("DEVICE LOST", info);
 });
-
+let bindGroupA = createPressureBind();  // Uses buffer A
+let bindGroupB = createPressureBind();  // Uses buffer B
 async function frame(now) {
 
 
@@ -1171,11 +1192,12 @@ async function frame(now) {
 
     updateMouse();
 
+
     const encoder =
     device.createCommandEncoder();
 
 
-    const computePass =
+    let computePass =
     encoder.beginComputePass();
 
     computePass.setPipeline(
@@ -1221,32 +1243,25 @@ swap(divergence);
 
 
 if(1 != 1){
-
     computePass.setPipeline(
         pressurePipeline
     );
-for (let i = 0; i < 20; i++) {
 
-
-
-    computePass.setBindGroup(
-        3,
-        pressureBind
-    );
-
+    for (let i = 0; i < 20; i++) {
+    
+    // Alternate between bind groups
+    const currentBindGroup = (i % 2 === 0) ? bindGroupA : bindGroupB;
+    computePass.setBindGroup(3, currentBindGroup);
     computePass.dispatchWorkgroups(
     Math.ceil(GRID_W / 8),
-    Math.ceil(GRID_H / 8)
-);
-
-    swap(pressure);
-
-    pressureBind =
-        createPressureBind();
-}
-
+    Math.ceil(GRID_H / 8));
+    
+    swap(pressure);  // Swap your buffer references
+    
+}   
 }
 if(1 == 1){
+
 computePass.setPipeline(projectPipeline);
 
 computePass.setBindGroup(0, uniformBind);
@@ -1324,6 +1339,14 @@ console.log(err);
 
     swap(velocity);
     swap(dye);
+
+
+    await device.queue.onSubmittedWorkDone();
+
+
+
+
+// Destroy it
 
     velocityBind =
     createVelocityBind();
