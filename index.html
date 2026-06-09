@@ -76,10 +76,13 @@ const shader = `
 
 struct MouseData {
     mouse: vec2f,
-    brushSize: f32,
-    isPressed: f32,
+    rightPressed: f32,
+    leftPressed: f32,
     canvasSize: vec2f,
     mouseVelocity: vec2f,
+};
+struct AdditionalData {
+    brushSize: f32,
 };
 
 struct Params {
@@ -95,6 +98,8 @@ var<uniform> params : Params;
 
 @group(0) @binding(2)
 var<uniform> brush : vec4f;
+@group(0) @binding(3)
+var<uniform> additionalData : AdditionalData;
 
 @group(1) @binding(0)
 var velocityRead :
@@ -351,7 +356,24 @@ fn pressureSolve(
 }
 
 @compute @workgroup_size(8, 8)
-fn colorMix(){
+fn colorMix(
+    @builtin(global_invocation_id)
+    gid : vec3<u32>
+) {
+    let size =
+        vec2f(
+            f32(params.width),
+            f32(params.height)
+        );
+
+    let uv =
+        (vec2f(gid.xy) + 0.5) /
+        size;
+
+let texel =
+    1.0 / vec2f(
+        size
+    );
 
 let center = textureSampleLevel(dyeRead, dyeSampler, uv, 0.0);
 
@@ -364,7 +386,7 @@ let alpha = 1.0; // how much old value stays
 let beta = 4.0 + alpha;
 
 let result =
-    (left + right + top + bottom + alpha * center) / beta;}
+    (left + right + top + bottom + alpha * center) / beta;} 
 
 
 
@@ -437,15 +459,22 @@ let texel =
     );
 
     let radiusSq =
-        mouseData.brushSize *
-        mouseData.brushSize;
+        additionalData.brushSize *
+        additionalData.brushSize;
 
     let influence =
         select(
             0.0,
             1.0,
             distSq < radiusSq
-        ) * mouseData.isPressed;
+        ) * mouseData.leftPressed;
+    let rightInfluence =
+        select(
+            0.0,
+            1.0,
+            distSq < radiusSq
+        ) * mouseData.rightPressed;
+        
     let flexInfluence =
         select(
             0.0,
@@ -463,7 +492,7 @@ let texel =
         mix(
             advectedVelocity,
             mouseData.mouseVelocity * 2000.0,
-            influence
+            influence + rightInfluence
         );
     finalVelocity *= 0.99999;
 
@@ -592,7 +621,7 @@ let texel =
         ) * 0.5;
 
     // REMOVE DIVERGENCE
-    vel -= (gradient * 0.1);
+    vel -= (gradient * 2);
         let pos =
     vec2i(
         i32(gid.x),
@@ -612,6 +641,10 @@ let texel =
 
 
 `;
+const additionalBuffer = device.createBuffer({
+    size: 20, // mouse + buttons
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+});
 export const gpuTracker = {
     textures: new Map(),
     buffers: new Map(),
@@ -719,7 +752,9 @@ device.queue.writeBuffer(
         0
     ])
 );
-
+document.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+});
 const uniformLayout =
 device.createBindGroupLayout({
 
@@ -753,8 +788,15 @@ device.createBindGroupLayout({
             buffer: {
                 type: "uniform"
             }
+        },
+        {
+    binding:3,
+    visibility:        GPUShaderStage.COMPUTE |
+    GPUShaderStage.FRAGMENT,
+    buffer:{
+        type:"uniform"
         }
-
+    }
     ]
 
 });
@@ -911,7 +953,13 @@ device.createBindGroup({
             resource: {
                 buffer: brushBuffer
             }
+        },
+        {
+        binding:3,
+        resource:{
+            buffer: additionalBuffer
         }
+    }
 
     ]
 
@@ -1160,17 +1208,35 @@ let mouseY = 0;
 let lastX = 0;
 let lastY = 0;
 
-let isPressed = 0;
 
-canvas.addEventListener(
-    "mousedown",
-    () => isPressed = 1
-);
 
-canvas.addEventListener(
-    "mouseup",
-    () => isPressed = 0
-);
+let leftPressed = 0;
+let rightPressed = 0;
+
+canvas.addEventListener("mousedown", (e) => {
+    mouseX =
+     e.offsetX /
+     canvas.clientWidth;
+
+mouseY =
+            e.offsetY /
+            canvas.clientHeight;
+    if (e.button === 0) {
+        leftPressed = 1;
+    }
+    if (e.button === 2) {
+        rightPressed = 1;
+    }
+});
+
+canvas.addEventListener("mouseup", (e) => {
+    if (e.button === 0) {
+        leftPressed = 0;
+    }
+    if (e.button === 2) {
+        rightPressed = 0;
+    }
+});
 
 canvas.addEventListener(
     "mousemove",
@@ -1199,27 +1265,26 @@ const dy =
     lastY = mouseY;
 
     device.queue.writeBuffer(
+    additionalBuffer,
+    0,
+    new Float32Array([
+        0.04,
+    ])
+);
 
+    device.queue.writeBuffer(
         mouseBuffer,
-
         0,
-
         new Float32Array([
-
             mouseX,
             mouseY,
-
-            0.05,
-            isPressed,
-
+            rightPressed,
+            leftPressed,
             canvas.width,
             canvas.height,
-
             dx,
             dy
-
         ])
-
     );
 
     const c =
@@ -1236,8 +1301,7 @@ const dy =
             c.r / 255,
             c.g / 255,
             c.b / 255,
-            1
-
+            1,
         ])
 
     );
@@ -1337,7 +1401,7 @@ if(1 == 1){
     computePass.setPipeline(
         pressurePipeline
     );
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 40; i++) {
     // Alternate between bind groups
     computePass.setBindGroup(3, pressureBind);
     computePass.dispatchWorkgroups(
@@ -1357,13 +1421,17 @@ computePass.dispatchWorkgroups(
     Math.ceil(GRID_H / 8)
 );
 if(1 == 1){
-    computePass.setPipeline(mixPipeline);
+    for (let i = 0; i < 10; i++) {
+        computePass.setPipeline(mixPipeline);
     computePass.setBindGroup(0, uniformBind);
     computePass.setBindGroup(2, dyeBind);
     computePass.dispatchWorkgroups(
         Math.ceil(GRID_W / 8),
         Math.ceil(GRID_H / 8)
     );
+
+}
+
 }
 
 
