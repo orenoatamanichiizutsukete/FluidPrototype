@@ -70,6 +70,8 @@ context.configure({
     alphaMode: "opaque"
 });
 
+console.log(" THIS IS NEW ACTUALLY RAH?")
+
 const shader = `
 
 struct MouseData {
@@ -105,7 +107,7 @@ var velocityWrite :texture_storage_2d<rgba16float, write>;
 @group(1) @binding(2)
 var velSampler : sampler;
 @group(3) @binding(4)
-var divergenceWrite : texture_storage_2d<rgba16float, write>;
+var divergenceWrite : texture_storage_2d<r32float, write>;
 
 
 @group(3) @binding(0)
@@ -177,7 +179,10 @@ fn fs(
             dyeSampler,
             uv
         );
-
+    let b = textureSample(divergenceRead, pressureSampler, uv).x;
+    let G = textureSampleLevel(pressureRead, pressureSampler, uv, 0.0).x;
+    let d = textureSample(velocityRead, velSampler, uv);
+    
     return c;
 }
 
@@ -346,14 +351,40 @@ fn pressureSolve(
 }
 
 @compute @workgroup_size(8, 8)
+fn colorMix(){
+
+let center = textureSampleLevel(dyeRead, dyeSampler, uv, 0.0);
+
+let left   = textureSampleLevel(dyeRead, dyeSampler, uv - vec2f(texel.x, 0.0), 0.0);
+let right  = textureSampleLevel(dyeRead, dyeSampler, uv + vec2f(texel.x, 0.0), 0.0);
+let top    = textureSampleLevel(dyeRead, dyeSampler, uv + vec2f(0.0, texel.y), 0.0);
+let bottom = textureSampleLevel(dyeRead, dyeSampler, uv - vec2f(0.0, texel.y), 0.0);
+
+let alpha = 1.0; // how much old value stays
+let beta = 4.0 + alpha;
+
+let result =
+    (left + right + top + bottom + alpha * center) / beta;}
+
+
+
+
+
+@compute @workgroup_size(8, 8)
 fn advect(
     @builtin(global_invocation_id)
     gid : vec3<u32>
 ) {
+
+    let size =
+        vec2f(
+            f32(params.width),
+            f32(params.height)
+        );
+        
 let texel =
     1.0 / vec2f(
-        f32(params.width),
-        f32(params.height)
+        size
     );
     if (
         gid.x >= params.width ||
@@ -364,10 +395,7 @@ let texel =
 
     let uv =
         (vec2f(gid.xy) + 0.5) /
-        vec2f(
-            f32(params.width),
-            f32(params.height)
-        );
+        size;
 
     let vel =
         textureSampleLevel(
@@ -434,17 +462,39 @@ let texel =
     var finalVelocity =
         mix(
             advectedVelocity,
-            mouseData.mouseVelocity * 200.0,
-            flexInfluence
+            mouseData.mouseVelocity * 2000.0,
+            influence
         );
     finalVelocity *= 0.99999;
-    
+
+    //let center = textureSampleLevel(dyeRead, dyeSampler, uv, 0.0);
+    //let center = dye;
+    //let left = textureSampleLevel(dyeRead, dyeSampler, uv - vec2f(texel.x, 0.0), 0.0);
+    //let right = textureSampleLevel(dyeRead, dyeSampler, uv + vec2f(texel.x, 0.0), 0.0);
+    //let top = textureSampleLevel(dyeRead, dyeSampler, uv + vec2f(0.0, texel.y), 0.0);
+    //let bottom = textureSampleLevel(dyeRead, dyeSampler, uv - vec2f(0.0, texel.y), 0.0);
+    //let avg = (center + left + right + top + bottom) / 5.0;
+    //dye = mix(center, avg, 1);
+
+
     textureStore(
         dyeWrite,
         pos,
         dye
     );
 
+
+    let vela =
+    textureSampleLevel(
+        velocityRead,
+        velSampler,
+        uv,
+        0.0
+    ).xy;
+
+
+
+    
     textureStore(
         velocityWrite,
         pos,
@@ -453,6 +503,7 @@ let texel =
             0.0,0.0
         )
     );
+
 }
 
 @compute @workgroup_size(8,8)
@@ -467,27 +518,38 @@ fn project(
     ) {
         return;
     }
-
     let size =
         vec2f(
             f32(params.width),
             f32(params.height)
         );
 
+let texel =
+    1.0 / vec2f(
+        size
+    );
+    if (
+        gid.x >= params.width ||
+        gid.y >= params.height
+    ) {
+        return;
+    }
+
     let uv =
-        (vec2f(gid.xy) + 0.5) / size;
+        (vec2f(gid.xy) + 0.5) /
+        size;
 
-    let texel =
-        1.0 / size;
+    
+    var vel =
+    textureSampleLevel(
+        velocityRead,
+        velSampler,
+        uv,
+        0.0
+    ).xy;
 
-    // CURRENT VELOCITY
-    var velocity =
-        textureSampleLevel(
-            velocityRead,
-            velSampler,
-            uv,
-            0.0
-        ).xy;
+
+
 
     // NEIGHBOR PRESSURES
     let left =
@@ -530,15 +592,18 @@ fn project(
         ) * 0.5;
 
     // REMOVE DIVERGENCE
-    velocity -= gradient;
-
+    vel -= (gradient * 0.1);
+        let pos =
+    vec2i(
+        i32(gid.x),
+        i32(gid.y)
+    );
     textureStore(
         velocityWrite,
-        vec2i(gid.xy),
+        pos,
         vec4f(
-            velocity,
-            0.0,
-            0.0
+            vel,
+            0.0,0.0
         )
     );
 }
@@ -574,7 +639,7 @@ device.createShaderModule({
     code: shader
 });
 const divergence =
-createPingPong("rgba16float");
+createPingPong("r32float");
 
 function createTexture(format) {
 
@@ -710,7 +775,7 @@ const pressureLayout = device.createBindGroupLayout({
     entries: [
         {
             binding: 0,
-            visibility: GPUShaderStage.COMPUTE,
+            visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
             texture: {
                 sampleType: "unfilterable-float"
             }
@@ -725,14 +790,14 @@ const pressureLayout = device.createBindGroupLayout({
         },
         {
             binding: 2,
-            visibility: GPUShaderStage.COMPUTE,
+            visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
             texture: {
-                sampleType: "float"
+                sampleType: "unfilterable-float"
             }
         },
         {
             binding: 3,
-            visibility: GPUShaderStage.COMPUTE,
+            visibility: GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
             sampler: {
                 type: "non-filtering"
             }
@@ -742,7 +807,7 @@ const pressureLayout = device.createBindGroupLayout({
             visibility: GPUShaderStage.COMPUTE,
             storageTexture: {
                 access: "write-only",
-                format: "rgba16float"
+                format: "r32float"
             }
         }
     ]
@@ -755,7 +820,7 @@ device.createBindGroupLayout({
         {
             binding: 0,
             visibility:
-                GPUShaderStage.COMPUTE ,
+                GPUShaderStage.COMPUTE | GPUShaderStage.FRAGMENT,
             texture: {
     sampleType: "float"}
         },
@@ -978,10 +1043,32 @@ device.createComputePipeline({
     }
 
 });
+const mixPipeline =
+device.createComputePipeline({
+
+    layout:
+        device.createPipelineLayout({
+            bindGroupLayouts: [
+                uniformLayout,
+                velocityLayout,
+                dyeLayout,
+                pressureLayout
+            ]
+        }),
+
+    compute: {
+        module: shaderModule,
+        entryPoint: "colorMix"
+    }
+
+});
 const pressure =
 createPingPong("r32float");
 
 pressureBind = createPressureBind();
+
+
+
 const pressurePipeline =
 device.createComputePipeline({
 
@@ -1035,7 +1122,8 @@ device.createRenderPipeline({
 
                 uniformLayout,
                 velocityLayout,
-                dyeLayout
+                dyeLayout,
+                pressureLayout
 
             ]
 
@@ -1223,6 +1311,11 @@ async function frame(now) {
         Math.ceil(GRID_W / 8),
         Math.ceil(GRID_H / 8)
     );
+
+    swap(velocity);
+    velocityBind =
+    createVelocityBind();
+
     
 if(1 == 1) {
 
@@ -1235,7 +1328,6 @@ computePass.dispatchWorkgroups(
     Math.ceil(GRID_W / 8),
     Math.ceil(GRID_H / 8)
 );
-
 swap(divergence);
 
 }
@@ -1245,32 +1337,36 @@ if(1 == 1){
     computePass.setPipeline(
         pressurePipeline
     );
-
     for (let i = 0; i < 20; i++) {
-    
     // Alternate between bind groups
     computePass.setBindGroup(3, pressureBind);
     computePass.dispatchWorkgroups(
     Math.ceil(GRID_W / 8),
     Math.ceil(GRID_H / 8));
-    
     swap(pressure);  // Swap your buffer references
     pressureBind = createPressureBind(); // Recreate bind group with new buffer references
-    
 }   
 }
 if(1 == 1){
-
 computePass.setPipeline(projectPipeline);
-
 computePass.setBindGroup(0, uniformBind);
 computePass.setBindGroup(1, velocityBind);
 computePass.setBindGroup(3, pressureBind);
-
 computePass.dispatchWorkgroups(
     Math.ceil(GRID_W / 8),
     Math.ceil(GRID_H / 8)
 );
+if(1 == 1){
+    computePass.setPipeline(mixPipeline);
+    computePass.setBindGroup(0, uniformBind);
+    computePass.setBindGroup(2, dyeBind);
+    computePass.dispatchWorkgroups(
+        Math.ceil(GRID_W / 8),
+        Math.ceil(GRID_H / 8)
+    );
+}
+
+
 }
 
 
@@ -1320,6 +1416,8 @@ computePass.dispatchWorkgroups(
         2,
         dyeBind
     );
+    renderPass.setBindGroup(3, pressureBind);
+
 
     renderPass.draw(6);
 
