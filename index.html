@@ -74,6 +74,12 @@ console.log(" THIS IS NEW ACTUALLY RAH?")
 
 const shader = `
 
+struct SoundData {
+    velocitySum : atomic<u32>,
+    vorticitySum : atomic<u32>,
+    sampleCount : atomic<u32>,
+};
+
 struct MouseData {
     mouse: vec2f,
     rightPressed: f32,
@@ -140,10 +146,94 @@ texture_2d<f32>;
 @group(2) @binding(1)
 var dyeWrite :
 texture_storage_2d<rgba16float, write>;
+@group(4) @binding(0)
+var<storage, read_write> soundData : SoundData;
 
 struct VSOut {
     @builtin(position) pos : vec4f,
 };
+
+
+@compute @workgroup_size(8,8)
+fn soundStats(
+    @builtin(global_invocation_id) gid : vec3<u32>
+) {
+    if (gid.x >= params.width || gid.y >= params.height) {
+        return;
+    }
+
+    // Only sample every 16th cell
+    if (gid.x % 16u != 0u || gid.y % 16u != 0u) {
+        return;
+    }
+
+    let size = vec2f(f32(params.width), f32(params.height));
+    let uv = (vec2f(gid.xy) + 0.5) / size;
+    let texel = 1.0 / size;
+
+    let center =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv,
+            0.0
+        ).xy;
+
+    let speed = length(center);
+
+    let left =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv - vec2f(texel.x,0.0),
+            0.0
+        ).xy;
+
+    let right =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv + vec2f(texel.x,0.0),
+            0.0
+        ).xy;
+
+    let bottom =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv - vec2f(0.0,texel.y),
+            0.0
+        ).xy;
+
+    let top =
+        textureSampleLevel(
+            velocityRead,
+            velSampler,
+            uv + vec2f(0.0,texel.y),
+            0.0
+        ).xy;
+
+    let vort =
+        abs(
+            (right.y - left.y) * 0.5 -
+            (top.x - bottom.x) * 0.5
+        );
+
+    atomicAdd(
+        &soundData.velocitySum,
+        u32(speed * 1000.0)
+    );
+
+    atomicAdd(
+        &soundData.vorticitySum,
+        u32(vort * 1000.0)
+    );
+
+    atomicAdd(
+        &soundData.sampleCount,
+        1u
+    );
+}
 
 @vertex
 fn vs(
@@ -641,6 +731,14 @@ let texel =
 
 
 `;
+
+const readbackBuffers = [
+  device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }),
+  device.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }),
+];
+
+let readIndex = 0;
+
 const additionalBuffer = device.createBuffer({
     size: 20, // mouse + buttons
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
@@ -755,6 +853,7 @@ device.queue.writeBuffer(
 document.addEventListener("contextmenu", (e) => {
     e.preventDefault();
 });
+
 const uniformLayout =
 device.createBindGroupLayout({
 
@@ -800,6 +899,7 @@ device.createBindGroupLayout({
     ]
 
 });
+
 const pressureSampler = device.createSampler({
 
     magFilter: "nearest",
@@ -1252,6 +1352,65 @@ canvas.addEventListener(
 
     }
 );
+const audioCtx = new AudioContext();
+let avgVelocity = 0;
+let avgVorticity = 0;
+
+const soundBuffer = device.createBuffer({
+    size: 8,
+    usage:
+        GPUBufferUsage.STORAGE |
+        GPUBufferUsage.COPY_SRC
+});
+
+const bufferSize = audioCtx.sampleRate * 2;
+const buffer = audioCtx.createBuffer(
+  1,
+  bufferSize,
+  audioCtx.sampleRate
+);
+
+const data = buffer.getChannelData(0);
+
+for (let i = 0; i < bufferSize; i++) {
+  data[i] = Math.random() * 2 - 1;
+}
+
+
+
+
+let playAudio = false;
+window.addEventListener("pointerdown", async () => {
+    if (audioCtx.state === "suspended") {
+        await audioCtx.resume();
+
+        const noise = audioCtx.createBufferSource();
+noise.buffer = buffer;
+noise.loop = true;
+
+const filter = audioCtx.createBiquadFilter();
+
+filter.type = "bandpass";
+filter.frequency.value = 1000;
+filter.Q.value = 0.5;
+
+noise.connect(filter);
+filter.connect(audioCtx.destination);
+noise.start();
+
+const gain = audioCtx.createGain();
+
+gain.gain.value = 0;
+
+filter.connect(gain);
+gain.connect(audioCtx.destination);
+playAudio = true;
+    }
+}, { once: true });
+
+
+
+
 
 function updateMouse() {
 
@@ -1320,7 +1479,44 @@ let frames = 0;
 device.lost.then(info => {
     console.error("DEVICE LOST", info);
 });
+const soundLayout = device.createBindGroupLayout({
+    entries: [
+        {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: {
+                type: "storage"
+            }
+        }
+    ]
+});
+const soundPipeline = device.createComputePipeline({
+    layout: device.createPipelineLayout({
+        bindGroupLayouts: [
+            uniformLayout,
+            velocityLayout,
+            dyeLayout,
+            pressureLayout,
+            soundLayout
+        ]
+    }),
+    compute: {
+        module: shaderModule,
+        entryPoint: "soundStats"
+    }
+});
 
+const soundBindGroup = device.createBindGroup({
+    layout: soundLayout,
+    entries: [
+        {
+            binding: 0,
+            resource: {
+                buffer: soundBuffer
+            }
+        }
+    ]
+});
 async function frame(now) {
 
 
@@ -1343,6 +1539,13 @@ async function frame(now) {
 
     updateMouse();
 
+    if(playAudio){
+        gain.gain.value =
+    Math.min(avgVorticity * 0.05, 1.0);
+
+filter.frequency.value =
+    300 + avgVelocity * 3000;
+    }
 
     const encoder =
     device.createCommandEncoder();
@@ -1433,6 +1636,42 @@ if(1 == 1){
 }
 
 }
+if (1== 1){
+    device.queue.writeBuffer(
+    soundBuffer,
+    0,
+    new Uint32Array([0,0,0]));
+
+    
+computePass.setPipeline(soundPipeline);
+computePass.setBindGroup(4, soundBindGroup);
+
+computePass.dispatchWorkgroups(
+    Math.ceil(GRID_W / 8),
+    Math.ceil(GRID_H / 8));
+
+    encoder.copyBufferToBuffer(
+    soundBuffer,
+    0,
+    readbackBuffer,
+    0,
+    16
+);
+const rb = readbackBuffers[readIndex];
+
+encoder.copyBufferToBuffer(soundBuffer, 0, rb, 0, 16);
+
+rb.mapAsync(GPUMapMode.READ).then(() => {
+    const data = new Uint32Array(rb.getMappedRange());
+    // use data here safely
+    rb.unmap();
+});
+
+readIndex = (readIndex + 1) % readbackBuffers.length;
+
+
+
+}
 
 
 }
@@ -1496,6 +1735,34 @@ if(1 == 1){
 device.queue.submit([
     encoder.finish()
 ]);
+
+await device.queue.onSubmittedWorkDone();
+
+const data =
+    new Uint32Array(
+        readbackBuffer.getMappedRange()
+    );
+
+    
+const velocitySum = data[0];
+const vorticitySum = data[1];
+const samples = data[2];
+
+avgVelocity =
+    velocitySum /
+    (samples * 1000);
+
+avgVorticity =
+    vorticitySum /
+    (samples * 1000);
+
+readbackBuffer.unmap();
+
+filter.frequency.value =
+    200 + avgVelocity * 4000;
+
+gain.gain.value =
+    Math.min(avgVorticity * 0.03, 1.0);
 
 const err =
     await device.popErrorScope();
